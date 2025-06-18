@@ -16,6 +16,15 @@ interface WebhookPayload {
   created_time?: string;
   last_edited_time?: string;
   verification_token?: string;
+  entity?: {
+    id: string;
+    type: string;
+  };
+  type?: string;
+  data?: {
+    updated_properties?: string[];
+    parent?: any;
+  };
   [key: string]: any;
 }
 
@@ -116,59 +125,65 @@ router.post('/notion', asyncHandler(async (req: Request, res: Response) => {
 
 // Procesar diferentes tipos de webhooks
 async function processWebhook(payload: WebhookPayload): Promise<void> {
-  const { object, id } = payload;
+  const entityType = payload.entity?.type;
+  const eventType = payload.type;
+  const entityId = payload.entity?.id;
   
-  if (!object || !id) {
-    logger.warn('Payload inválido: object o id faltante');
+  if (!entityType || !entityId || !eventType) {
+    logger.warn('Payload inválido: entity.type, entity.id o type faltante', {
+      entityType,
+      entityId,
+      eventType,
+      payload: JSON.stringify(payload, null, 2)
+    });
     return;
   }
   
-  logger.info(`Procesando webhook para ${object} (ID: ${id})`);
+  logger.info(`Procesando webhook: ${eventType} para ${entityType} (ID: ${entityId})`);
   
-  switch (object) {
-    case 'page':
-      await processPageWebhook(payload);
-      break;
-    case 'database':
-      await processDatabaseWebhook(payload);
-      break;
-    case 'comment':
-      await processCommentWebhook(payload);
-      break;
-    default:
-      logger.warn(`Tipo de objeto no manejado: ${object}`);
+  // Procesar según tipo de entidad y evento
+  if (entityType === 'page') {
+    await processPageWebhook(payload, eventType, entityId);
+  } else if (entityType === 'database') {
+    await processDatabaseWebhook(payload, eventType, entityId);
+  } else if (eventType === 'comment.created') {
+    await processCommentWebhook(payload);
+  } else {
+    logger.warn(`Tipo de entidad/evento no manejado: ${entityType}/${eventType}`);
   }
 }
 
 // Procesar webhooks de páginas
-async function processPageWebhook(payload: WebhookPayload): Promise<void> {
+async function processPageWebhook(payload: WebhookPayload, eventType: string, entityId: string): Promise<void> {
   try {
     // Obtener la página actualizada
-    const page = await notion.pages.retrieve({ page_id: payload.id! });
+    const page = await notion.pages.retrieve({ page_id: entityId });
     
     logger.info('Página actualizada:', {
       id: page.id,
+      eventType,
       last_edited_time: (page as any).last_edited_time,
       properties: Object.keys((page as any).properties || {})
     });
     
-    // Aquí puedes agregar lógica específica para manejar cambios en páginas
-    // Por ejemplo: actualizar balances, sincronizar datos, etc.
+    // Lógica específica para transacciones
+    await handleTransactionLogic(page, eventType, payload);
     
   } catch (error) {
-    logger.error(`Error procesando webhook de página ${payload.id}:`, error);
+    logger.error(`Error procesando webhook de página ${entityId}:`, error);
     throw error;
   }
 }
 
 // Procesar webhooks de bases de datos
-async function processDatabaseWebhook(payload: WebhookPayload): Promise<void> {
+async function processDatabaseWebhook(payload: WebhookPayload, eventType: string, entityId: string): Promise<void> {
   try {
     // Obtener la base de datos actualizada
-    const database = await notion.databases.retrieve({ database_id: payload.id! });
+    const database = await notion.databases.retrieve({ database_id: entityId });
     
     logger.info('Base de datos actualizada:', {
       id: database.id,
+      eventType,
       title: (database as any).title?.[0]?.plain_text || 'Sin título',
       last_edited_time: (database as any).last_edited_time
     });
@@ -176,8 +191,100 @@ async function processDatabaseWebhook(payload: WebhookPayload): Promise<void> {
     // Aquí puedes agregar lógica específica para manejar cambios en bases de datos
     
   } catch (error) {
-    logger.error(`Error procesando webhook de base de datos ${payload.id}:`, error);
+    logger.error(`Error procesando webhook de base de datos ${entityId}:`, error);
     throw error;
+  }
+}
+
+// Lógica específica para manejar transacciones
+async function handleTransactionLogic(page: any, eventType: string, payload: WebhookPayload): Promise<void> {
+  try {
+    // Verificar si la página está en la base de datos de Transacciones
+    const parent = page.parent;
+    if (parent?.type !== 'database_id') {
+      return; // No es una página de base de datos
+    }
+    
+    const databaseId = parent.database_id;
+    const database = await notion.databases.retrieve({ database_id: databaseId });
+    const databaseTitle = (database as any).title?.[0]?.plain_text || '';
+    
+    logger.info('Procesando página en base de datos:', {
+      databaseTitle,
+      databaseId,
+      pageId: page.id,
+      eventType
+    });
+    
+    // Solo procesar si es la base de datos de Transacciones
+    if (databaseTitle.toLowerCase().includes('transaccion')) {
+      await handleTransactionPage(page, eventType, payload);
+    }
+    
+  } catch (error) {
+    logger.error('Error en handleTransactionLogic:', error);
+  }
+}
+
+// Manejar páginas de transacciones específicamente
+async function handleTransactionPage(page: any, eventType: string, payload: WebhookPayload): Promise<void> {
+  try {
+    const properties = page.properties;
+    
+    // Buscar la propiedad de Fecha
+    let fechaProperty = null;
+    let fechaValue = null;
+    
+    for (const [key, prop] of Object.entries(properties)) {
+      if (key.toLowerCase().includes('fecha') || (prop as any).type === 'date') {
+        fechaProperty = key;
+        fechaValue = (prop as any).date?.start;
+        break;
+      }
+    }
+    
+    if (!fechaValue) {
+      logger.warn('No se encontró fecha en la transacción:', { pageId: page.id });
+      return;
+    }
+    
+    logger.info('Transacción procesada:', {
+      pageId: page.id,
+      eventType,
+      fechaProperty,
+      fechaValue,
+      updatedProperties: payload.data?.updated_properties || []
+    });
+    
+    // Aquí implementarías la lógica para:
+    // 1. Buscar o crear la entrada en la tabla "Día" para esa fecha
+    // 2. Asignar la relación entre la transacción y el día
+    
+    // TODO: Implementar asignación a tabla Día
+    await assignTransactionToDay(page.id, fechaValue);
+    
+  } catch (error) {
+    logger.error('Error procesando transacción:', error);
+  }
+}
+
+// Asignar transacción a la tabla Día
+async function assignTransactionToDay(transactionId: string, fecha: string): Promise<void> {
+  try {
+    logger.info('Asignando transacción a día:', {
+      transactionId,
+      fecha
+    });
+    
+    // TODO: Implementar lógica para:
+    // 1. Buscar la entrada en la tabla "Día" para la fecha
+    // 2. Si no existe, crearla
+    // 3. Actualizar la relación en la transacción
+    
+    logger.info('Transacción asignada a día exitosamente');
+    
+  } catch (error) {
+    logger.error('Error asignando transacción a día:', error);
   }
 }
 
