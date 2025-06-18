@@ -1,7 +1,7 @@
 {
   "name": "notion-webhook-server",
   "version": "1.0.0",
-  "description": "Servidor de webhooks para Notion - Deploy en Railway",
+  "description": "Servidor de webhooks para Notion - Production ready",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "dev:watch": "nodemon --exec tsx src/index.ts",
     "type-check": "tsc --noEmit"
   },
-  "keywords": ["notion", "webhooks", "railway", "typescript"],
+  "keywords": ["notion", "webhooks", "render", "typescript"],
   "author": "",
   "license": "MIT",
   "dependencies": {
