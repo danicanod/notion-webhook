@@ -271,20 +271,122 @@ async function handleTransactionPage(page: any, eventType: string, payload: Webh
 // Asignar transacción a la tabla Día
 async function assignTransactionToDay(transactionId: string, fecha: string): Promise<void> {
   try {
+    if (!process.env.DAY_DATABASE_ID) {
+      logger.warn('DAY_DATABASE_ID no configurado, saltando asignación');
+      return;
+    }
+
     logger.info('Asignando transacción a día:', {
       transactionId,
+      fecha,
+      dayDatabaseId: process.env.DAY_DATABASE_ID
+    });
+    
+    // Paso 1: Buscar si ya existe una entrada para esta fecha
+    const existingDay = await findDayByDate(fecha);
+    
+    let dayPageId: string;
+    
+    if (existingDay) {
+      dayPageId = existingDay.id;
+      logger.info('Día encontrado existente:', { dayPageId, fecha });
+    } else {
+      // Paso 2: Crear nueva entrada en tabla Día
+      dayPageId = await createDayEntry(fecha);
+      logger.info('Nuevo día creado:', { dayPageId, fecha });
+    }
+    
+    // Paso 3: Actualizar la transacción para referenciar el día
+    await updateTransactionDayRelation(transactionId, dayPageId);
+    
+    logger.info('Transacción asignada a día exitosamente:', {
+      transactionId,
+      dayPageId,
       fecha
     });
     
-    // TODO: Implementar lógica para:
-    // 1. Buscar la entrada en la tabla "Día" para la fecha
-    // 2. Si no existe, crearla
-    // 3. Actualizar la relación en la transacción
-    
-    logger.info('Transacción asignada a día exitosamente');
-    
   } catch (error) {
     logger.error('Error asignando transacción a día:', error);
+  }
+}
+
+// Buscar día existente por fecha
+async function findDayByDate(fecha: string): Promise<any | null> {
+  try {
+    const response = await notion.databases.query({
+      database_id: process.env.DAY_DATABASE_ID!,
+      filter: {
+        property: 'Fecha', // Asumiendo que la propiedad se llama 'Fecha'
+        date: {
+          equals: fecha
+        }
+      }
+    });
+    
+    return response.results.length > 0 ? response.results[0] : null;
+  } catch (error) {
+    logger.error('Error buscando día por fecha:', error);
+    return null;
+  }
+}
+
+// Crear nueva entrada en tabla Día
+async function createDayEntry(fecha: string): Promise<string> {
+  try {
+    const response = await notion.pages.create({
+      parent: {
+        database_id: process.env.DAY_DATABASE_ID!
+      },
+      properties: {
+        'Fecha': {
+          date: {
+            start: fecha
+          }
+        },
+        // Puedes agregar más propiedades por defecto aquí
+        'Name': {
+          title: [
+            {
+              text: {
+                content: `Día ${fecha}`
+              }
+            }
+          ]
+        }
+      }
+    });
+    
+    return response.id;
+  } catch (error) {
+    logger.error('Error creando entrada de día:', error);
+    throw error;
+  }
+}
+
+// Actualizar relación de transacción con día
+async function updateTransactionDayRelation(transactionId: string, dayPageId: string): Promise<void> {
+  try {
+    await notion.pages.update({
+      page_id: transactionId,
+      properties: {
+        'Día': { // Asumiendo que la propiedad de relación se llama 'Día'
+          relation: [
+            {
+              id: dayPageId
+            }
+          ]
+        }
+      }
+    });
+    
+    logger.info('Relación actualizada exitosamente:', {
+      transactionId,
+      dayPageId
+    });
+    
+  } catch (error) {
+    logger.error('Error actualizando relación transacción-día:', error);
+    throw error;
   }
 }
 
