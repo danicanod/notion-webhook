@@ -7,11 +7,23 @@ import { webhookRoutes } from './routes/webhook.js';
 import { healthRoutes } from './routes/health.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
+import { config, validateEnvironment, isDevelopment } from './config/environment.js';
 
+// Load environment variables
 dotenv.config();
 
+// Validate required environment variables
+try {
+  validateEnvironment();
+  logger.info('✅ Environment validation passed');
+} catch (error) {
+  logger.error('❌ Environment validation failed:', error);
+  if (!isDevelopment) {
+    process.exit(1);
+  }
+}
+
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Rate limiting
 const limiter = rateLimit({
@@ -66,21 +78,41 @@ app.use('*', (req, res) => {
   });
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
-  logger.info(`🚀 Servidor iniciado en puerto ${PORT}`);
-  logger.info(`📍 Entorno: ${process.env.NODE_ENV || 'development'}`);
+// Start server
+const server = app.listen(config.port, () => {
+  logger.info(`🚀 Server started on port ${config.port}`);
+  logger.info(`📍 Environment: ${config.nodeEnv}`);
   logger.info(`🔗 Webhook endpoint: /webhook/notion`);
+  logger.info(`📊 Health check: /health`);
 });
 
-// Manejo de errores no capturados
+// Graceful shutdown handling
+const gracefulShutdown = (signal: string) => {
+  logger.info(`${signal} received. Starting graceful shutdown...`);
+  
+  server.close(() => {
+    logger.info('✅ Server closed successfully');
+    process.exit(0);
+  });
+  
+  // Force shutdown after 10 seconds
+  setTimeout(() => {
+    logger.error('❌ Forced shutdown due to timeout');
+    process.exit(1);
+  }, 10000);
+};
+
+// Process event handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 process.on('uncaughtException', (err) => {
-  logger.error('Error no capturado:', err);
+  logger.error('Uncaught Exception:', err);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Promesa rechazada no manejada:', { reason, promise });
+  logger.error('Unhandled Rejection:', { reason, promise });
   process.exit(1);
 });
 
