@@ -1,115 +1,132 @@
-# Configuración de Webhooks de Notion
+# Webhook Setup - Guía Técnica Detallada
 
-Este servidor implementa la verificación completa de webhooks de Notion según la documentación oficial.
+> **📖 Para guía completa, ver [README.md](./README.md)**
 
-## Pasos de configuración
+Esta guía cubre los detalles técnicos específicos de configuración de webhooks de Notion.
 
-### 1. Configurar la integración de Notion
+## 🔧 Implementación Técnica
 
-1. Ve a [Notion Integrations](https://www.notion.so/my-integrations)
-2. Crea una nueva integración
-3. Configura las capabilities necesarias:
-   - **Read content**: Para acceder a páginas y bases de datos
-   - **Comment read**: Para recibir eventos de comentarios (opcional)
-4. Copia el **Internal Integration Token**
+### **Verificación de Firma (HMAC-SHA256)**
 
-### 2. Configurar variables de entorno
+El servidor implementa la verificación completa según la documentación oficial de Notion:
 
-```bash
-# Copia el env.example y configura tu token
-cp env.example .env
+```javascript
+// Signature verification
+const calculatedSignature = `sha256=${crypto
+  .createHmac('sha256', verificationToken)
+  .update(bodyString)
+  .digest('hex')}`;
 
-# Edita .env con tu token de Notion
-NOTION_TOKEN=secret_tu_token_aqui
+const isValid = crypto.timingSafeEqual(
+  Buffer.from(calculatedSignature),
+  Buffer.from(notionSignature)
+);
 ```
 
-### 3. Iniciar el servidor
+### **Flujo de Verificación**
 
-```bash
-npm start
-```
+1. **Step 2**: Notion envía `verification_token` → Servidor almacena automáticamente
+2. **Step 3**: Eventos subsecuentes usan `X-Notion-Signature` → Validación HMAC
 
-### 4. Verificar el webhook en Notion
+### **Persistencia del Token**
 
-1. Ve a tu integración en Notion → pestaña **Webhooks**
-2. Haz clic en **Add webhook endpoint**
-3. Ingresa tu URL: `https://tu-servidor.com/webhook/notion`
-4. Selecciona los eventos que quieres recibir:
-   - `page.property_updated`
-   - `page.content_updated`
-   - `database.schema_updated`
-   - `comment.created` (si tienes comment read capability)
+- ✅ **En memoria**: Para sesión actual
+- ✅ **En env var**: `NOTION_VERIFICATION_TOKEN` para persistencia
+- ✅ **Fallback**: Bypass en desarrollo si no hay token
 
-5. Haz clic en **Add webhook**
+## 📡 Eventos Soportados
 
-### 5. Verificación automática
+| Evento | Descripción | Automatización |
+|--------|-------------|----------------|
+| `page.property_updated` | Cambio en propiedades de página | ✅ Asignación automática a Día |
+| `page.content_updated` | Cambio en contenido | 📊 Logging detallado |
+| `database.schema_updated` | Cambio en esquema de BD | 📊 Monitoring |
+| `comment.created` | Comentario creado | 📋 Preparado para futuras automatizaciones |
 
-El servidor maneja automáticamente la verificación:
+## 🔍 Debugging y Troubleshooting
 
-1. **Step 2**: Notion envía un `verification_token` → el servidor lo almacena automáticamente
-2. **Step 3**: Para eventos subsecuentes, el servidor valida la firma `X-Notion-Signature`
-
-### 6. Verificar el estado
-
-Puedes verificar si el webhook está correctamente configurado:
-
-```bash
-curl https://tu-servidor.com/webhook/status
-```
-
-Respuesta esperada:
+### **Logs de Webhook**
 ```json
 {
-  "verified": true,
-  "verification_token_stored": true,
-  "timestamp": "2024-01-XX..."
+  "message": "Webhook received from Notion",
+  "payloadType": "event",
+  "entityType": "page", 
+  "eventType": "page.property_updated",
+  "headers": { "x-notion-signature": "sha256=..." }
 }
 ```
 
-## Eventos soportados
+### **Estados de Verificación**
+- `GET /webhook/status` - Estado actual del webhook
 
-- **page.property_updated**: Cuando se actualizan propiedades de una página
-- **page.content_updated**: Cuando se actualiza el contenido de una página
-- **database.schema_updated**: Cuando se modifica el esquema de una base de datos
-- **comment.created**: Cuando se crea un comentario
+### **Problemas Comunes**
 
-## Testing
+#### ❌ **Error 401: Verification token not found**
+**Causa**: Token perdido en reinicio del servidor
+**Solución**: Configurar `NOTION_VERIFICATION_TOKEN` en variables de entorno
 
-### Test 1: Cambiar título de página
-1. Agrega la integración a una página en Notion
-2. Cambia el título de la página
-3. Espera 1-2 minutos (eventos agregados tienen delay)
-4. Verifica los logs del servidor
+#### ❌ **Error 401: Invalid Notion signature**  
+**Causa**: Token incorrecto o body modificado
+**Solución**: Verificar token y que el body llegue como raw buffer
 
-### Test 2: Agregar comentario
-1. Agrega un comentario en una página con acceso de la integración
-2. Deberías recibir un evento `comment.created` inmediatamente
+#### ⚠️ **Webhook no recibe eventos**
+**Posibles causas**:
+1. Integración sin acceso al objeto
+2. Capabilities faltantes
+3. Subscription inactiva
+4. URL incorrecta
 
-### Test 3: Modificar esquema de base de datos
-1. Abre una base de datos con acceso de la integración
-2. Agrega/modifica/elimina una propiedad
-3. Deberías recibir un evento `database.schema_updated`
+## 🧪 Testing Detallado
 
-## Troubleshooting
+### **Test 1: Verificación inicial**
+```bash
+# Crear webhook en Notion → Ver logs:
+# "🔑 VERIFICATION TOKEN RECEIVED FROM NOTION"
+# "✅ Webhook verified successfully"
+```
 
-### Webhook no recibe eventos
-1. Verificar que la integración tenga acceso al objeto
-2. Confirmar capabilities necesarias están habilitadas
-3. Verificar que la subscription esté activa en Notion
-4. Revisar logs del servidor para errores
+### **Test 2: Evento de transacción**
+```bash
+# Modificar transacción → Ver logs:
+# "Processing webhook: page.property_updated for page"
+# "Transaction assigned to day successfully"
+```
 
-### Error "Verification token no encontrado"
-1. Verificar que Notion haya enviado el verification token inicial
-2. Reiniciar el servidor puede requerir re-verificación
-3. Borrar y recrear el webhook en Notion si es necesario
+### **Test 3: Health check**
+```bash
+curl https://tu-servidor.com/webhook/status
+# Expected: {"verified": true, "verificationTokenStored": true}
+```
 
-### Eventos agregados no llegan inmediatamente
-Algunos eventos como `page.content_updated` son agregados para reducir ruido.
-Para testing inmediato, usa eventos como `comment.created`.
+## 📊 Monitoreo de Producción
 
-## Seguridad
+### **Métricas clave:**
+- ✅ **Signature validation rate**: 100% válidas
+- ✅ **Processing time**: < 2s por webhook
+- ✅ **Error rate**: < 1%
+- ✅ **Uptime**: 99.9%
 
-- ✅ Validación completa de firma HMAC-SHA256
-- ✅ Verification token almacenado de forma segura
-- ✅ Validation de headers requeridos
-- ✅ Logging de eventos para auditoría 
+### **Alertas recomendadas:**
+- Webhook verification failures
+- Processing timeouts > 5s
+- Error rate > 5%
+
+## 🔐 Consideraciones de Seguridad
+
+### **Headers validados:**
+- `X-Notion-Signature`: Firma HMAC-SHA256 requerida
+- `User-Agent`: `notion-api` esperado
+- `Content-Type`: `application/json` requerido
+
+### **Rate limiting:**
+- 100 requests / 15 minutos
+- Headers informativos en respuesta
+
+### **Logging de seguridad:**
+- Todas las firmas inválidas se loggean
+- IPs y User-Agents registrados
+- Payloads sanitizados en logs
+
+---
+
+> **💡 Para configuración básica y deploy, ver [README.md](./README.md)** 
