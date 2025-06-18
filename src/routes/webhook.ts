@@ -11,49 +11,77 @@ const notion = new Client({
 });
 
 interface WebhookPayload {
-  object: string;
-  id: string;
-  created_time: string;
-  last_edited_time: string;
+  object?: string;
+  id?: string;
+  created_time?: string;
+  last_edited_time?: string;
+  verification_token?: string;
   [key: string]: any;
 }
 
-// Verificar la firma del webhook
-const verifyWebhookSignature = (body: Buffer, signature: string): boolean => {
-  if (!process.env.WEBHOOK_SECRET) {
-    logger.warn('WEBHOOK_SECRET no configurado, saltando verificación');
-    return true;
+// Variable para almacenar el verification token
+let storedVerificationToken: string | null = null;
+
+// Verificar la firma del webhook usando el verification token de Notion
+const verifyNotionSignature = (body: string, signature: string, verificationToken: string): boolean => {
+  try {
+    const calculatedSignature = `sha256=${crypto
+      .createHmac('sha256', verificationToken)
+      .update(body)
+      .digest('hex')}`;
+
+    return crypto.timingSafeEqual(
+      Buffer.from(calculatedSignature),
+      Buffer.from(signature)
+    );
+  } catch (error) {
+    logger.error('Error verificando firma de Notion:', error);
+    return false;
   }
-
-  const expectedSignature = crypto
-    .createHmac('sha256', process.env.WEBHOOK_SECRET)
-    .update(body)
-    .digest('hex');
-
-  const providedSignature = signature.replace('sha256=', '');
-  return crypto.timingSafeEqual(
-    Buffer.from(expectedSignature, 'hex'),
-    Buffer.from(providedSignature, 'hex')
-  );
 };
 
 // Endpoint principal de webhook
 router.post('/notion', asyncHandler(async (req: Request, res: Response) => {
-  const signature = req.headers['notion-webhook-signature'] as string;
+  const body = JSON.stringify(req.body);
+  const payload: WebhookPayload = req.body;
   
-  if (!signature) {
-    throw createError('Firma de webhook requerida', 401);
+  // Step 2: Manejar verification token inicial
+  if (payload.verification_token && !payload.object) {
+    logger.info('Verification token recibido de Notion:', {
+      token: payload.verification_token.substring(0, 20) + '...'
+    });
+    
+    // Almacenar el verification token
+    storedVerificationToken = payload.verification_token;
+    
+    // Responder exitosamente para completar la verificación
+    res.status(200).json({
+      success: true,
+      message: 'Verification token recibido y almacenado',
+      timestamp: new Date().toISOString()
+    });
+    
+    logger.info('Webhook verificado exitosamente. Subscription activa.');
+    return;
   }
 
-  // Verificar firma
-  if (!verifyWebhookSignature(req.body, signature)) {
-    throw createError('Firma de webhook inválida', 401);
+  // Step 3: Validar payload para eventos subsecuentes
+  const notionSignature = req.headers['x-notion-signature'] as string;
+  
+  if (!notionSignature) {
+    throw createError('X-Notion-Signature header requerido', 401);
   }
 
-  // Parsear el payload
-  const payload: WebhookPayload = JSON.parse(req.body.toString());
-  
-  logger.info('Webhook recibido:', {
+  if (!storedVerificationToken) {
+    throw createError('Webhook no verificado. Verification token no encontrado.', 401);
+  }
+
+  // Verificar la firma usando el verification token
+  if (!verifyNotionSignature(body, notionSignature, storedVerificationToken)) {
+    throw createError('Firma de Notion inválida', 401);
+  }
+
+  logger.info('Webhook de Notion recibido y verificado:', {
     object: payload.object,
     id: payload.id,
     created_time: payload.created_time,
@@ -80,6 +108,11 @@ router.post('/notion', asyncHandler(async (req: Request, res: Response) => {
 async function processWebhook(payload: WebhookPayload): Promise<void> {
   const { object, id } = payload;
   
+  if (!object || !id) {
+    logger.warn('Payload inválido: object o id faltante');
+    return;
+  }
+  
   logger.info(`Procesando webhook para ${object} (ID: ${id})`);
   
   switch (object) {
@@ -88,6 +121,9 @@ async function processWebhook(payload: WebhookPayload): Promise<void> {
       break;
     case 'database':
       await processDatabaseWebhook(payload);
+      break;
+    case 'comment':
+      await processCommentWebhook(payload);
       break;
     default:
       logger.warn(`Tipo de objeto no manejado: ${object}`);
@@ -98,7 +134,7 @@ async function processWebhook(payload: WebhookPayload): Promise<void> {
 async function processPageWebhook(payload: WebhookPayload): Promise<void> {
   try {
     // Obtener la página actualizada
-    const page = await notion.pages.retrieve({ page_id: payload.id });
+    const page = await notion.pages.retrieve({ page_id: payload.id! });
     
     logger.info('Página actualizada:', {
       id: page.id,
@@ -119,7 +155,7 @@ async function processPageWebhook(payload: WebhookPayload): Promise<void> {
 async function processDatabaseWebhook(payload: WebhookPayload): Promise<void> {
   try {
     // Obtener la base de datos actualizada
-    const database = await notion.databases.retrieve({ database_id: payload.id });
+    const database = await notion.databases.retrieve({ database_id: payload.id! });
     
     logger.info('Base de datos actualizada:', {
       id: database.id,
@@ -134,6 +170,31 @@ async function processDatabaseWebhook(payload: WebhookPayload): Promise<void> {
     throw error;
   }
 }
+
+// Procesar webhooks de comentarios
+async function processCommentWebhook(payload: WebhookPayload): Promise<void> {
+  try {
+    logger.info('Comentario creado:', {
+      id: payload.id,
+      created_time: payload.created_time
+    });
+    
+    // Aquí puedes agregar lógica específica para manejar comentarios
+    
+  } catch (error) {
+    logger.error(`Error procesando webhook de comentario ${payload.id}:`, error);
+    throw error;
+  }
+}
+
+// Endpoint para obtener el status del webhook
+router.get('/status', asyncHandler(async (req: Request, res: Response) => {
+  res.json({
+    verified: !!storedVerificationToken,
+    verification_token_stored: !!storedVerificationToken,
+    timestamp: new Date().toISOString()
+  });
+}));
 
 // Endpoint de prueba
 router.post('/test', asyncHandler(async (req: Request, res: Response) => {
