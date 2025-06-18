@@ -42,8 +42,18 @@ const verifyNotionSignature = (body: string, signature: string, verificationToke
 
 // Endpoint principal de webhook
 router.post('/notion', asyncHandler(async (req: Request, res: Response) => {
-  const body = JSON.stringify(req.body);
-  const payload: WebhookPayload = req.body;
+  // Parsear el body desde Buffer a JSON
+  const bodyString = req.body.toString();
+  const payload: WebhookPayload = JSON.parse(bodyString);
+  
+  // Debug logging
+  logger.info('Webhook recibido de Notion:', {
+    headers: req.headers,
+    bodyString: bodyString.substring(0, 200),
+    payload: payload,
+    hasVerificationToken: !!payload.verification_token,
+    hasObject: !!payload.object
+  });
   
   // Step 2: Manejar verification token inicial
   if (payload.verification_token && !payload.object) {
@@ -77,7 +87,7 @@ router.post('/notion', asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Verificar la firma usando el verification token
-  if (!verifyNotionSignature(body, notionSignature, storedVerificationToken)) {
+  if (!verifyNotionSignature(bodyString, notionSignature, storedVerificationToken)) {
     throw createError('Firma de Notion inválida', 401);
   }
 
